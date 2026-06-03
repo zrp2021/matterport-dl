@@ -78,6 +78,16 @@ window.nv_fetch = new Proxy(window.fetch, {
 
 window.XMLHttpRequest = window.nv_XMLHttpRequest;
 window.fetch = window.nv_fetch;
+if (navigator.sendBeacon) {
+	window.nv_sendBeacon = new Proxy(navigator.sendBeacon, {
+		apply: function (target, that, args) {
+			if (args.length > 0 && args[0])
+				args[0] = window._replaceHost(args[0].toString());
+			return target.apply(that, args);
+		},
+	});
+	navigator.sendBeacon = window.nv_sendBeacon;
+}
 window.oldAppendChild = Element.prototype.appendChild;
 Element.prototype.appendChild = function() {
 	if (arguments.length > 0) {

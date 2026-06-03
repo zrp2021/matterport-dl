@@ -18,6 +18,11 @@ def get_downloads_path():
     global DOWNLOAD_DIR
     return DOWNLOAD_DIR
 
+def is_safe_alias_name(alias):
+    if alias in ("", ".", "..") or os.path.isabs(alias):
+        return False
+    return os.path.basename(alias) == alias and "/" not in alias and "\\" not in alias
+
 def load_model_json(model_id):
     """Load JSON data from a model's run_args.json file, returning the data or an empty dictionary if not found"""
     run_args_path = os.path.join(get_downloads_path(), model_id, "run_args.json")
@@ -80,6 +85,9 @@ def load_model_data():
 
 def remove_alias_smylink(expected_owner_model_id, alias):
     """Checks if in the downloads folder there is a sym link and pointing to expected_owner_model_id if so remove it otherwise we do nothing"""
+    if not is_safe_alias_name(alias):
+        print_colored(f"Refusing unsafe alias path {alias}", bcolors.WARNING)
+        return
     downloads_path = get_downloads_path()
     alias_path = os.path.join(downloads_path, alias)
     if os.path.islink(alias_path):
@@ -94,6 +102,9 @@ def remove_alias_smylink(expected_owner_model_id, alias):
 
 def create_alias_smylink(model_id, alias):
     """Create a symlink in the downloads folder pointing to the model_id"""
+    if not is_safe_alias_name(alias):
+        print_colored(f"Refusing unsafe alias path {alias}", bcolors.WARNING)
+        return
     downloads_path = get_downloads_path()
     alias_path = os.path.join(downloads_path, alias)
     model_path = os.path.join(downloads_path, model_id)
@@ -107,6 +118,9 @@ def create_alias_smylink(model_id, alias):
 
 def update_model_alias(model_id, new_title):
     """Update the title in run_args.json and create a symlink with the new title"""
+    if not is_safe_alias_name(new_title):
+        print_colored(f"Refusing unsafe alias path {new_title}", bcolors.WARNING)
+        return False
     data = load_model_json(model_id)
     old_title = data.get("ALIAS", "")
     if old_title:

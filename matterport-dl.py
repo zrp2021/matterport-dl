@@ -157,6 +157,22 @@ def getModifiedName(filename: str):
     return f"{basename}.modified.{ext}"
 
 
+def safeDownloadTarget(file: str) -> str:
+    file, _, _query = file.partition("?")
+    file = file.replace("\\", "/")
+    path = pathlib.PurePosixPath(file)
+    if path.is_absolute() or re.match(r"^[A-Za-z]:/", file) or ".." in path.parts:
+        raise ValueError(f"Refusing to write outside the archive directory: {file}")
+    return str(path)
+
+
+def isSafeAliasName(alias: str) -> bool:
+    if alias in ("", ".", ".."):
+        return False
+    alias_path = pathlib.PurePosixPath(alias.replace("\\", "/"))
+    return not alias_path.is_absolute() and len(alias_path.parts) == 1 and ".." not in alias_path.parts
+
+
 def getVariants():
     variants = []
     global SWEEP_DO_4K
@@ -261,6 +277,7 @@ async def GetTextOnlyRequest(type, shouldExist, url, post_data=None) -> str:
 async def downloadFileAndGetText(type, shouldExist, url, file, post_data=None, isBinary=False, always_download=False, key_type: AccessKeyType = AccessKeyType.PrimaryKey):
     if not CLA.getCommandLineArg(CommandLineArg.TILDE):
         file = file.replace("~", "_")
+    file = safeDownloadTarget(file)
 
     await downloadFile(type, shouldExist, url, file, post_data, always_download, key_type)
     if not os.path.exists(file):
@@ -288,11 +305,10 @@ async def downloadFile(type, shouldExist, url, file, post_data=None, always_down
 
         if not CLA.getCommandLineArg(CommandLineArg.TILDE):
             file = file.replace("~", "_")
+        file = safeDownloadTarget(file)
 
         if "/" in file:
             makeDirs(os.path.dirname(file))
-        if "?" in file:
-            file = file.split("?")[0]
 
         if not CLA.getCommandLineArg(CommandLineArg.DOWNLOAD) or (os.path.exists(file) and not always_download):  # skip already downloaded files except always download ones which are genreally ones that may contain keys?
             logUrlDownloadSkipped(type, file, url, "")
@@ -475,6 +491,47 @@ def extractJSDict(forWhat: str, str: str):
     return ret
 
 
+def addStaticAsset(assets: list[str], typeDict: dict[str, str], file: str, asset_type: str):
+    if file in typeDict:
+        return
+    typeDict[file] = asset_type
+    assets.append(file)
+
+
+def getDiscoveredLazyChunkIds() -> set[str]:
+    chunk_ids: set[str] = set()
+    js_path = pathlib.Path("js")
+    if not js_path.exists():
+        return chunk_ids
+    for js_file in js_path.glob("*.js"):
+        try:
+            text = js_file.read_text(encoding="UTF-8")
+        except Exception:
+            continue
+        chunk_ids.update(re.findall(r"\.e\(\s*([0-9]+)\s*\)", text))
+    return chunk_ids
+
+
+async def downloadDiscoveredLazyChunks(base: str, jsChunkFiles: dict[str, str], cssChunkFiles: dict[str, str]):
+    attempted: set[str] = set()
+    for _ in range(8):
+        toDownload: list[AsyncDownloadItem] = []
+        for chunk_id in sorted(getDiscoveredLazyChunkIds()):
+            js_file = jsChunkFiles.get(chunk_id, f"js/{chunk_id}.js")
+            if not os.path.exists(js_file) and js_file not in attempted:
+                attempted.add(js_file)
+                toDownload.append(AsyncDownloadItem("SHOWCASE_DISCOVERED_LAZY_JS", False, base + js_file, js_file))
+
+            css_file = cssChunkFiles.get(chunk_id, f"css/{chunk_id}.css")
+            if not os.path.exists(css_file) and css_file not in attempted:
+                attempted.add(css_file)
+                toDownload.append(AsyncDownloadItem("SHOWCASE_DISCOVERED_LAZY_CSS", False, base + css_file, css_file))
+
+        if not toDownload:
+            break
+        await AsyncArrayDownload(toDownload)
+
+
 async def downloadAssets(base, base_page_text):
     global PROGRESS, BASE_MATTERPORT_DOMAIN, MAIN_SHOWCASE_FILENAME
 
@@ -485,9 +542,9 @@ async def downloadAssets(base, base_page_text):
     font_files = ["ibm-plex-sans-100", "ibm-plex-sans-100italic", "ibm-plex-sans-200", "ibm-plex-sans-200italic", "ibm-plex-sans-300", "ibm-plex-sans-300italic", "ibm-plex-sans-500", "ibm-plex-sans-500italic", "ibm-plex-sans-600", "ibm-plex-sans-600italic", "ibm-plex-sans-700", "ibm-plex-sans-700italic", "ibm-plex-sans-italic", "ibm-plex-sans-regular", "mp-font", "roboto-100", "roboto-100italic", "roboto-300", "roboto-300italic", "roboto-500", "roboto-500italic", "roboto-700", "roboto-700italic", "roboto-900", "roboto-900italic", "roboto-italic", "roboto-regular"]
 
     # extension assumed to be .png unless it is .svg or .jpg, for anything else place it in assets
-    image_files = ["360_placement_pin_mask", "chrome", "Desktop-help-play-button.svg", "Desktop-help-spacebar", "edge", "escape", "exterior", "exterior_hover", "firefox", "interior", "interior_hover", "matterport-logo-light.svg", "matterport-logo.svg", "mattertag-disc-128-free.v1", "mobile-help-play-button.svg", "nav_help_360", "nav_help_click_inside", "nav_help_gesture_drag", "nav_help_gesture_drag_two_finger", "nav_help_gesture_pinch", "nav_help_gesture_position", "nav_help_gesture_position_two_finger", "nav_help_gesture_tap", "nav_help_inside_key", "nav_help_keyboard_all", "nav_help_keyboard_left_right", "nav_help_keyboard_up_down", "nav_help_mouse_click", "nav_help_mouse_ctrl_click", "nav_help_mouse_drag_left", "nav_help_mouse_drag_right", "nav_help_mouse_position_left", "nav_help_mouse_position_right", "nav_help_mouse_zoom", "nav_help_tap_inside", "nav_help_zoom_keys", "NoteColor", "pinAnchor", "safari", "scope.svg", "showcase-password-background.jpg", "surface_grid_planar_256", "vert_arrows", "headset-quest-2", "tagColor", "matterport-app-icon.svg"]
+    image_files = ["360_placement_pin_mask", "atlas", "chrome", "Desktop-help-play-button.svg", "Desktop-help-spacebar", "edge", "escape", "exterior", "exterior_hover", "firefox", "interior", "interior_hover", "logo-white.svg", "matterport-logo-light.svg", "matterport-logo-white-r.svg", "matterport-logo.svg", "mattertag-disc-128-free.v1", "mobile-help-play-button.svg", "nav_help_360", "nav_help_click_inside", "nav_help_gesture_drag", "nav_help_gesture_drag_two_finger", "nav_help_gesture_pinch", "nav_help_gesture_position", "nav_help_gesture_position_two_finger", "nav_help_gesture_tap", "nav_help_inside_key", "nav_help_keyboard_all", "nav_help_keyboard_left_right", "nav_help_keyboard_up_down", "nav_help_mouse_click", "nav_help_mouse_ctrl_click", "nav_help_mouse_drag_left", "nav_help_mouse_drag_right", "nav_help_mouse_position_left", "nav_help_mouse_position_right", "nav_help_mouse_zoom", "nav_help_tap_inside", "nav_help_zoom_keys", "NoteColor", "pinAnchor", "safari", "scope.svg", "showcase-password-background.jpg", "surface_grid_planar_256", "vert_arrows", "headset-quest-2", "tagColor", "matterport-app-icon.svg"]
 
-    assets = ["js/browser-check.js", "css/showcase.css", "css/packages-nova-ui.css", "css/scene.css", "css/unsupported_browser.css", "cursors/grab.png", "cursors/grabbing.png", "cursors/zoom-in.png", "cursors/zoom-out.png", "locale/strings.json", "css/ws-blur.css", "css/core.css", "css/late.css"]
+    assets = ["js/browser-check.js", "css/showcase.css", "css/packages-nova-ui.css", "css/scene.css", "css/unsupported_browser.css", "cursors/grab.png", "cursors/grabbing.png", "cursors/zoom-in.png", "cursors/zoom-out.png", "locale/strings.json", "css/ws-blur.css", "css/core.css", "css/late.css", "images/favicons/favicon.ico"]
 
     # following seem no more: "css/split.css", "headset-cardboard", "headset-quest", "NoteIcon",  "puck_256_red", "tagbg", "tagmask", "roboto-700-42_0", "pinIconDefault",
 
@@ -515,6 +572,7 @@ async def downloadAssets(base, base_page_text):
         file = js
         if "://" in js:
             consoleDebugLog(f"Skipping {js} should be the three.js file as the only non-relative one")
+            continue
         # if "://" not in js:
         # file = base + js
         if file in assets:
@@ -574,29 +632,52 @@ async def downloadAssets(base, base_page_text):
         showcase_cont,
         re.X,
     )
-    if match is None:
-        raise Exception("Unable to extract js files and css files from showcase runtime js file")
-    groupDict = match.groupdict()
-    jsNamedDict = extractJSDict("showcase-runtime.js: namedJSFiles", groupDict["namedJSFiles"])
-    jsKeyDict = extractJSDict("showcase-runtime.js: JSFileToKey", groupDict["JSFileToKey"])
-    cssNamedDict = extractJSDict("showcase-runtime.js: namedCSSFiles", groupDict["namedCSSFiles"])
-    cssKeyDict = extractJSDict("showcase-runtime.js: CSSFileToKey", groupDict["CSSFileToKey"])
+    jsChunkFiles: dict[str, str] = {}
+    cssChunkFiles: dict[str, str] = {}
+    try:
+        if match is None:
+            raise Exception("Unable to extract js files and css files from showcase runtime js file")
+        groupDict = match.groupdict()
+        jsNamedDict = extractJSDict("showcase-runtime.js: namedJSFiles", groupDict["namedJSFiles"])
+        jsKeyDict = extractJSDict("showcase-runtime.js: JSFileToKey", groupDict["JSFileToKey"])
+        cssNamedDict = extractJSDict("showcase-runtime.js: namedCSSFiles", groupDict["namedCSSFiles"])
+        cssKeyDict = extractJSDict("showcase-runtime.js: CSSFileToKey", groupDict["CSSFileToKey"])
 
-    for number, key in jsKeyDict.items():
-        name = number
-        if name in jsNamedDict:
-            name = jsNamedDict[name]
-        file = f"js/{name}.{key}.js"
-        typeDict[file] = "SHOWCASE_DISCOVERED_JS"
-        assets.append(file)
+        for number, key in jsKeyDict.items():
+            name = number
+            if name in jsNamedDict:
+                name = jsNamedDict[name]
+            file = f"js/{name}.{key}.js"
+            jsChunkFiles[number] = file
+            addStaticAsset(assets, typeDict, file, "SHOWCASE_DISCOVERED_JS")
 
-    for number, key in cssKeyDict.items():
-        name = number
-        if name in cssNamedDict:
-            name = cssNamedDict[name]
-        file = f"css/{name}.css"  # key is not used for css its just 1 always
-        typeDict[file] = "SHOWCASE_DISCOVERED_CSS"
-        assets.append(file)
+        for number, key in cssKeyDict.items():
+            name = number
+            if name in cssNamedDict:
+                name = cssNamedDict[name]
+            file = f"css/{name}.css"  # key is not used for css its just 1 always
+            cssChunkFiles[number] = file
+            addStaticAsset(assets, typeDict, file, "SHOWCASE_DISCOVERED_CSS")
+    except Exception as oldRuntimeParseError:
+        # Newer showcase runtimes no longer include a numeric chunk-to-hash map.
+        # They resolve chunks directly to js/<name>.js and css/<name>.css.
+        simpleJSMatch = re.search(r"""["']js/["']\+\(\{(?P<namedJSFiles>.*?)\}\[[^\]]+\]\|\|[^)]+\)\+["']\.js["']""", showcase_cont)
+        simpleCSSMatch = re.search(r"""["']css/["']\+\(\{(?P<namedCSSFiles>.*?)\}\[[^\]]+\]\|\|[^)]+\)\+["']\.css["']""", showcase_cont)
+        if simpleJSMatch is None or simpleCSSMatch is None:
+            raise oldRuntimeParseError
+
+        jsNamedDict = extractJSDict("showcase-runtime.js: simple namedJSFiles", "{" + simpleJSMatch.group("namedJSFiles") + "}")
+        cssNamedDict = extractJSDict("showcase-runtime.js: simple namedCSSFiles", "{" + simpleCSSMatch.group("namedCSSFiles") + "}")
+
+        for number, name in jsNamedDict.items():
+            file = f"js/{name}.js"
+            jsChunkFiles[number] = file
+            addStaticAsset(assets, typeDict, file, "SHOWCASE_DISCOVERED_JS")
+
+        for number, name in cssNamedDict.items():
+            file = f"css/{name}.css"
+            cssChunkFiles[number] = file
+            addStaticAsset(assets, typeDict, file, "SHOWCASE_DISCOVERED_CSS")
 
     for image in image_files:
         if not image.endswith(".jpg") and not image.endswith(".svg"):
@@ -623,6 +704,7 @@ async def downloadAssets(base, base_page_text):
         shouldExist = True
         toDownload.append(AsyncDownloadItem(type, shouldExist, f"{base}{asset}", local_file))
     await AsyncArrayDownload(toDownload)
+    await downloadDiscoveredLazyChunks(base, jsChunkFiles, cssChunkFiles)
     if react_vendor_filename and os.path.exists(react_vendor_filename):
         reactCont = ""
         with open(react_vendor_filename, "r", encoding="UTF-8") as f:
@@ -719,14 +801,38 @@ async def downloadInfo(pageid):
         KeyHandler.SaveKeysFromText(f"FilesType{i}", fileText)  # used to be more elegant but now we can just gobble all the keys
 
 
+def getPluginManifestPath(plugin_name: str, plugin_version: str) -> str:
+    return f"showcase-sdk/plugins/published/{plugin_name}/{plugin_version}/plugin.json"
+
+
+def getPluginVersionAliases(plugin_version: str) -> set[str]:
+    match = re.fullmatch(r"(\d+\.\d+\.\d+)-\d+", plugin_version)
+    if match is None:
+        return set()
+    return {match.group(1)}
+
+
+def copyPluginAlias(plugin_name: str, source_version: str, alias_version: str):
+    source_path = getPluginManifestPath(plugin_name, source_version)
+    alias_path = getPluginManifestPath(plugin_name, alias_version)
+    if source_path == alias_path or os.path.exists(alias_path) or not os.path.exists(source_path):
+        return
+    makeDirs(os.path.dirname(alias_path))
+    shutil.copyfile(source_path, alias_path)
+
+
 async def downloadPlugins(pageid):
     global BASE_MATTERPORT_DOMAIN
     pluginJson: Any
     with open("api/v1/plugins", "r", encoding="UTF-8") as f:
         pluginJson = json.loads(f.read())
     for plugin in pluginJson:
-        plugPath = f"showcase-sdk/plugins/published/{plugin['name']}/{plugin['currentVersion']}/plugin.json"
+        plugin_name = plugin["name"]
+        plugin_version = plugin["currentVersion"]
+        plugPath = getPluginManifestPath(plugin_name, plugin_version)
         await downloadFile("PLUGIN", True, f"https://static.{BASE_MATTERPORT_DOMAIN}/{plugPath}", plugPath)
+        for alias_version in getPluginVersionAliases(plugin_version):
+            copyPluginAlias(plugin_name, plugin_version, alias_version)
 
 
 async def downloadAttachments():
@@ -849,6 +955,8 @@ async def downloadCapture(pageid):
     BASE_MODEL_ID = pageid
     alias = CLA.getCommandLineArg(CommandLineArg.ALIAS)
     if alias and not os.path.exists(alias):
+        if not isSafeAliasName(alias):
+            raise ValueError(f"Unsafe alias name: {alias}")
         os.symlink(pageid, alias)
     THIS_MODEL_ROOT_DIR = os.path.abspath(pageid)
     os.chdir(THIS_MODEL_ROOT_DIR)
@@ -920,6 +1028,7 @@ async def downloadCapture(pageid):
     # window._ProxyAppendURL=1;
     injectedjs = 'if (!window.location.search.startsWith("?m=' + pageid + '")) { document.location.search = "?m=' + pageid + '"; };window._NoTilde=' + ("false" if CLA.getCommandLineArg(CommandLineArg.TILDE) else "true") + ";window._ProxyBase=" + forcedProxyBase + ";"
     content = base_page_text.replace(staticbase, ".")
+    content = re.sub(r"""\s*<link\s+rel=["'](?:dns-prefetch|preconnect)["'][^>]*(?:matterport|fastly)[^>]*>\s*""", "\n", content, flags=re.IGNORECASE)
     proxyAdd = ""
     if CLA.getCommandLineArg(CommandLineArg.MANUAL_HOST_REPLACEMENT):
         content = RemoteDomainsReplace(content)
